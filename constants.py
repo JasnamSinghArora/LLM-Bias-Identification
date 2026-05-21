@@ -5,6 +5,6 @@ constants = {
     "BATCHES" : 1,
     "MF" : "gender",
     "SF" : "sports",
-    "MODEL_PATH" : "Qwen/Qwen2.5-14B-Instruct"
+    "MODEL_PATH" : "Qwen/Qwen2.5-7B-Instruct"
 }
 constants["BATCH_SIZE"] = constants["DATASET_SIZE"] //  constants["BATCHES"]
