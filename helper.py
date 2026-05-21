@@ -8,7 +8,7 @@ from constants import constants
 client = Anthropic(api_key=constants["API_KEY"])
 tokenizer = AutoTokenizer.from_pretrained(
     constants["MODEL_PATH"],
-    local_files_only=True,
+    local_files_only=False,
     trust_remote_code=True
 )
 
