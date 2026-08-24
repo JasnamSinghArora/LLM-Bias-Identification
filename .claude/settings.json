@@ -4,7 +4,9 @@
       "Bash(ls -d ~/.cache/huggingface/hub/models--Qwen--Qwen2.5-3B-Instruct/snapshots/*/)",
       "Read(//Users/jasnamsingharora/.cache/huggingface/hub/models--Qwen--Qwen2.5-3B-Instruct/snapshots/**)",
       "Bash(ls /Users/jasnamsingharora/.cache/huggingface/hub/ 2>/dev/null | grep -i qwen)",
-      "Read(//Users/jasnamsingharora/.cache/huggingface/hub/**)"
+      "Read(//Users/jasnamsingharora/.cache/huggingface/hub/**)",
+      "Bash(API_KEY=dummy python3 -c ' *)",
+      "Bash(awk 'NR<=5 || NR%20==0' benchmark_scores.csv)"
     ]
   }
 }

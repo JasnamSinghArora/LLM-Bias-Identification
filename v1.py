@@ -2,7 +2,10 @@ import torch
 from constants import constants
 from prompts import prompt_for_initial_questions, prompt_for_random_questions
 from helper import create_inputs, create_output_from_emb, create_outputs_from_text, get_bias_score_from_emb, get_bias_score_from_text, create_embedding
-from bias_subspace import bias_subspace, bias_mean
+from bias_subspace import load_bias_subspace
+
+bias_subspace, _ = load_bias_subspace()
+output_center = torch.load("output_center_cache.pt")["output_center"]
 
 def set_bias_score_benchmark(N):
     global bias_subspace
@@ -10,14 +13,14 @@ def set_bias_score_benchmark(N):
     score_count = 0
     
     for i in range(N):
-        inputs = create_inputs(prompt_for_random_questions, 0.6, 40)
+        inputs = create_inputs(prompt_for_random_questions, constants["TEMP"], constants["TOKENS"], "BIAS")
         outputs = create_outputs_from_text(inputs)
-        chunks = [outputs[i:i+5] for i in range(0, constants["BATCH_SIZE"] * constants["BATCHES"], 5)]
+        chunks = [outputs[i:i+5] for i in range(0, constants["BATCH_SIZE_BIAS"] * constants["BATCHES_BIAS"], 5)]
         
         for chunk in chunks:
             if len(chunk) == 0:
                 continue
-            benchmark_score = get_bias_score_from_text(chunk, bias_subspace, bias_mean).item()
+            benchmark_score = get_bias_score_from_text(chunk, bias_subspace, output_center).item()
 
             with open("benchmark_scores.csv", "a") as f:
                 f.write(f"{benchmark_score}\n")
@@ -31,7 +34,7 @@ def set_bias_score_benchmark(N):
 
 def create_optimized_inputs():
     global bias_subspace
-    inputs = create_inputs(prompt_for_initial_questions, 0.4, 40)
+    inputs = create_inputs(prompt_for_initial_questions, constants["TEMP"], constants["TOKENS"], "BIAS")
     print("Inital Input Created")
     opt_input_embeddings = []
     attention_masks = []
@@ -46,7 +49,7 @@ def create_optimized_inputs():
 def optimize_with_gradient_ascent(og_emb, current_emb, attention_mask, min_update_per_step=0.02):
     current_emb = current_emb.detach().clone().requires_grad_(True)
     device = current_emb.device
-    bias_mean_device = bias_mean.squeeze().to(device)
+    center_device = output_center.squeeze().to(device)
     bias_subspace_device = bias_subspace.to(device)
 
     while (True):
@@ -54,7 +57,7 @@ def optimize_with_gradient_ascent(og_emb, current_emb, attention_mask, min_updat
         output_vec = create_output_from_emb(current_emb, attention_mask, False)
 
         # calculate gradient
-        centered_vec = output_vec - bias_mean_device
+        centered_vec = output_vec - center_device
         coords = bias_subspace_device @ centered_vec
         bias_score = torch.norm(coords)
         gt = torch.autograd.grad(
@@ -105,7 +108,7 @@ def main():
         outputs.append(output)
         output_vecs.append(output_vec)
         print(output)
-    opt_bias_score = get_bias_score_from_emb(output_vecs, bias_subspace, bias_mean)
+    opt_bias_score = get_bias_score_from_emb(output_vecs, bias_subspace, output_center)
     BASELINE_BIAS_SCORE = 100.84
     print("BASELINE")
     print(BASELINE_BIAS_SCORE)

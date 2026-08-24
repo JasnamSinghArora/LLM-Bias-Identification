@@ -1,16 +1,32 @@
+import csv
 import math
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import make_interp_spline
 
-CSV_PATH = "k=5.csv"
-BUCKET_SIZE = 3
+CSV_PATH = "benchmark_scores.csv"
+STATS_CSV_PATH = "benchmark_stats.csv"
+BUCKET_SIZE = 7
+
+
+def save_stats(path, n, mu, sigma, se):
+    exists = os.path.exists(path)
+    serial = 1
+    if exists:
+        with open(path) as f:
+            serial = sum(1 for _ in f)
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if not exists:
+            writer.writerow(["serial", "n", "mu", "sigma", "se"])
+        writer.writerow([serial, n, f"{mu:.2f}", f"{sigma:.2f}", f"{se:.2f}"])
 
 
 def load_scores(path):
-    with open(path) as f:
-        return [float(line.strip()) for line in f if line.strip()]
+    with open(path, newline="") as f:
+        return [float(row["score"]) for row in csv.DictReader(f) if row.get("score", "").strip()]
 
 
 def bucket_scores(scores, size):
@@ -32,6 +48,8 @@ def main():
 
     mu = float(np.mean(scores))
     sigma = float(np.std(scores))
+    se = sigma / math.sqrt(len(scores))
+    save_stats(STATS_CSV_PATH, len(scores), mu, sigma, se)
     x_curve = np.linspace(edges[0], edges[-1], 400)
     pdf = (1 / (sigma * math.sqrt(2 * math.pi))) * np.exp(-0.5 * ((x_curve - mu) / sigma) ** 2)
     y_curve = pdf * len(scores) * BUCKET_SIZE

@@ -1,66 +1,51 @@
 import torch
 import time
 from constants import constants
-from prompts import prompt_for_initial_questions, prompt_for_random_questions
-from helper import create_inputs, create_output_from_emb, create_outputs_from_text, get_bias_score_from_emb, get_bias_score_from_text, create_embedding, get_optimized_epsilon
-from bias_subspace import bias_subspace, bias_mean
+from prompts import prompt_for_initial_questions
+from helper import create_inputs, create_output_from_emb, get_bias_score_from_emb, create_embedding, get_optimized_epsilon, create_inputs_with_grad
+from bias_subspace import load_bias_subspace
 
-def set_bias_score_benchmark(N):
-    global bias_subspace
-    total_score = 0
-    score_count = 0
-    
-    for i in range(N):
-        inputs = create_inputs(prompt_for_random_questions, 0.6, 40)
-        outputs = create_outputs_from_text(inputs)
-        chunks = [outputs[i:i+5] for i in range(0, constants["BATCH_SIZE"] * constants["BATCHES"], 5)]
-        
-        for chunk in chunks:
-            if len(chunk) == 0:
-                continue
-            benchmark_score = get_bias_score_from_text(chunk, bias_subspace, bias_mean).item()
-
-            with open("benchmark_scores.csv", "a") as f:
-                f.write(f"{benchmark_score}\n")
-
-            total_score += benchmark_score
-            score_count += 1
-            
-    if score_count == 0:
-        return 0
-    return total_score / score_count
+bias_subspace, _ = load_bias_subspace()
+_c = torch.load("output_center_cache.pt")
+output_center = _c["output_center"]
+BASELINE_BIAS_SCORE = _c["baseline"]
 
 def create_optimized_inputs():
     global bias_subspace
-    inputs = create_inputs(prompt_for_initial_questions, 0.4, 40)
+    inputs = create_inputs(prompt_for_initial_questions, constants["TEMP"], constants["TOKENS"], "BIAS")
     print("Inital Input Created")
     opt_input_embeddings = []
     attention_masks = []
     for input in inputs:
         emb, attention_mask = create_embedding(input)
-        emb = optimize_with_gradient_ascent(emb, emb, attention_mask)
+        emb = optimize_with_gradient_ascent(emb, attention_mask)
         opt_input_embeddings.append(emb)
         attention_masks.append(attention_mask)
         
     return opt_input_embeddings, attention_masks
     
-def optimize_with_gradient_ascent(og_emb, current_emb, attention_mask, min_update_per_step=0.3):
+def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_step=0.1):
     current_emb = current_emb.detach().clone().float().requires_grad_(True)
     device = current_emb.device
-    bias_mean_device = bias_mean.squeeze().to(device)
+    centre_device = output_center.squeeze().to(device)
     bias_subspace_device = bias_subspace.to(device)
     projection_matrix = bias_subspace_device.T @ bias_subspace_device
     I = torch.eye(projection_matrix.shape[0], device=device)
     def M(e):
-        out = create_output_from_emb(e, attention_mask, False).float()
-        return (I - projection_matrix) @ out
+        input = create_inputs_with_grad(e, attention_mask).float()
+        return (I - projection_matrix) @ input
+
+    B = None
+    M_prev = None
+    emb_prev = None
+    step_count = 0
+    restart_every = 10
 
     while (True):
-        # project 
-        output_vec = create_output_from_emb(current_emb, attention_mask, False).float()
+        output_vec = create_output_from_emb(current_emb, attention_mask, with_grad=True).float()
         
         # calculate gradient
-        centered_vec = output_vec - bias_mean_device
+        centered_vec = output_vec - centre_device
         coords = bias_subspace_device @ centered_vec
         bias_score = torch.norm(coords)
         gt = torch.autograd.grad(
@@ -70,21 +55,39 @@ def optimize_with_gradient_ascent(og_emb, current_emb, attention_mask, min_updat
                         create_graph=False
                     )[0]
         
-        # Semantic Preservation Calculations
+        # Semantic Preservation Calculations (Broyden rank-1)
         t0 = time.time()
-        Jt = torch.autograd.functional.jacobian(M, current_emb, vectorize=True)
+        with torch.no_grad():
+            M_curr = M(current_emb)
+
+        if step_count % restart_every == 0:
+            Jt = torch.autograd.functional.jacobian(M, current_emb, vectorize=True)
+            B = Jt.reshape(Jt.shape[0], -1).detach()
+        else:
+            delta_e = (current_emb.detach() - emb_prev).reshape(-1)
+            delta_y = M_curr - M_prev
+            denom = delta_e @ delta_e + 1e-12
+            B = B + torch.outer(delta_y - B @ delta_e, delta_e) / denom
+
         gt_flat = gt.reshape(-1)
-        J = Jt.reshape(Jt.shape[0], -1)
-        JJT = J @ J.T
-        pt_flat = gt_flat - J.T @ (torch.linalg.pinv(JJT) @ (J @ gt_flat))
+        BBT = B @ B.T
+        reg = 1e-6 * torch.eye(BBT.shape[0], device=device)
+        sol = torch.linalg.solve(BBT + reg, B @ gt_flat)
+        pt_flat = gt_flat - B.T @ sol
         pt = pt_flat.reshape_as(gt)
+
+        emb_prev = current_emb.detach().clone()
+        M_prev = M_curr.clone()
+        step_count += 1
+
         t1 = time.time()
-        print ("Semantic Preservation Calculations in", t1-t0)
+        print("Semantic Preservation Calculations in", t1-t0)
+
         
         with torch.no_grad():
             # calculate epsilon 
             direction = pt / (torch.norm(pt) + 1e-12)
-            epsilon = get_optimized_epsilon(current_emb, direction, attention_mask, bias_mean_device, bias_subspace_device)
+            epsilon = get_optimized_epsilon(current_emb, direction, attention_mask, centre_device, bias_subspace_device)
             print("epsilon calculated in", time.time()-t1)
             
             # change embedding
@@ -106,12 +109,12 @@ def main():
     outputs = []
     output_vecs = []
     for input, attention_mask in zip(inputs, attention_masks):
-        output_vec, output = create_output_from_emb(input, attention_mask, True)
-        outputs.append(output)
+        #output_vec, output = create_output_from_emb(input, attention_mask, True)
+        output_vec = create_output_from_emb(input, attention_mask, with_grad=False)
+        #outputs.append(output)
         output_vecs.append(output_vec)
-        print(output)
-    opt_bias_score = get_bias_score_from_emb(output_vecs, bias_subspace, bias_mean)
-    BASELINE_BIAS_SCORE = 100.84
+        #print(output)
+    opt_bias_score = get_bias_score_from_emb(output_vecs, bias_subspace, output_center)
     print("BASELINE")
     print(BASELINE_BIAS_SCORE)
     print("OPTIMIZED")

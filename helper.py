@@ -2,6 +2,7 @@ from anthropic import Anthropic
 import json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
+from contextlib import nullcontext
 from json_repair import repair_json
 from constants import constants
 
@@ -14,8 +15,9 @@ tokenizer = AutoTokenizer.from_pretrained(
 
 model = AutoModelForCausalLM.from_pretrained(
     constants["MODEL_PATH"],
-    torch_dtype=torch.float16,
-    device_map="auto"
+    torch_dtype=torch.bfloat16,
+    device_map="auto",
+    attn_implementation="eager"
 )
 
 model.eval()
@@ -74,14 +76,14 @@ def generate_with_test_llm(input):
     
     return response
 
-def create_inputs(prompt, temp, tokens):
+def create_inputs(prompt, temp, tokens, kind):
     inputs = []
 
-    for i in range (constants["BATCHES"]):
+    for i in range (constants[f"BATCHES_{kind}"]):
         print("starting API call")
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens = constants["BATCH_SIZE"] * tokens,
+            max_tokens = constants[f"BATCH_SIZE_{kind}"] * tokens,
             temperature=temp,
             messages=[
                 {
@@ -114,6 +116,20 @@ def create_inputs(prompt, temp, tokens):
         print("ended API call")
                 
     return inputs
+
+def create_inputs_with_grad(emb, attention_mask):
+    emb = emb.to(model.device).to(model.dtype)
+    attention_mask = attention_mask.to(model.device)
+
+    outputs = model(
+        inputs_embeds=emb,
+        attention_mask=attention_mask,
+        output_hidden_states=True,
+        return_dict=True
+    )
+
+    input_vec = outputs.hidden_states[constants["LAYER"]].mean(dim=1).squeeze()
+    return input_vec
         
 def create_outputs_from_text(inputs):
     outputs = []
@@ -123,61 +139,58 @@ def create_outputs_from_text(inputs):
         
     return outputs
 
-def create_output_from_emb(emb, attention_mask, return_text, max_tokens=40):
-    emb = emb.to(model.device).to(model.dtype)
-    attention_mask = attention_mask.to(model.device)
+def create_output_from_emb(emb, attention_mask, with_grad, max_tokens=40):
+    context = nullcontext() if with_grad else torch.no_grad()
 
-    if not return_text:
+    with context:
+    
+        emb = emb.to(model.device).to(model.dtype)
+        attention_mask = attention_mask.to(model.device)
+
+        with torch.no_grad():
+            gen_ids = model.generate(
+                inputs_embeds=emb,
+                attention_mask=attention_mask,
+                max_new_tokens=max_tokens,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        K = gen_ids.shape[1]          
+
+        gen_embeds = model.get_input_embeddings()(gen_ids).to(model.dtype).detach()
+
+        full_embeds = torch.cat([emb, gen_embeds], dim=1)
+        ones = torch.ones((emb.shape[0], K), device=model.device, dtype=attention_mask.dtype)
+        full_mask = torch.cat([attention_mask, ones], dim=1)
+
         outputs = model(
-            inputs_embeds=emb,
-            attention_mask=attention_mask,
+            inputs_embeds=full_embeds,
+            attention_mask=full_mask,
             output_hidden_states=True,
-            return_dict=True
+            return_dict=True,
         )
 
-        output_vec = outputs.hidden_states[-1].mean(dim=1).squeeze()
-        return output_vec
+        output_vec = outputs.hidden_states[constants["LAYER"]][:, -K:, :].mean(dim=1).squeeze()
+    return output_vec
 
-    generated_ids = model.generate(
-        inputs_embeds=emb,
-        attention_mask=attention_mask,
-        max_new_tokens=max_tokens,
-        do_sample=False
-    )
-
-    output_text = tokenizer.decode(
-        generated_ids[0],
-        skip_special_tokens=True
-    )
-
-    outputs = model(
-        input_ids=generated_ids,
-        output_hidden_states=True,
-        return_dict=True
-    )
-
-    output_vec = outputs.hidden_states[-1].mean(dim=1).squeeze()
-
-    return output_vec, output_text
-
-def get_bias_score_from_text(outputs, bias_subspace, bias_mean):
+def get_bias_score_from_text(outputs, bias_subspace, center):
     bias_total = 0
     err_cnt = 0
-    
+
     for output in outputs:
         if output == "":
             err_cnt += 1
             continue
         states = hidden_states(output)
-        vector = states[-1].mean(dim=1).squeeze().float().cpu()
-        centered = vector - bias_mean.squeeze()
+        vector = states[constants["LAYER"]].mean(dim=1).squeeze().float().cpu()
+        centered = vector - center.squeeze()
         coords = bias_subspace @ centered
         bias_total += torch.norm(coords)
         
     bias_score = bias_total / (len(outputs) - err_cnt)
     return bias_score
         
-def get_bias_score_from_emb(outputs, bias_subspace, bias_mean):
+def get_bias_score_from_emb(outputs, bias_subspace, center):
     bias_total = 0
     err_cnt = 0
 
@@ -188,10 +201,10 @@ def get_bias_score_from_emb(outputs, bias_subspace, bias_mean):
 
         vector = output_vec.squeeze().float()
 
-        local_bias_mean = bias_mean.squeeze().to(vector.device).float()
+        local_center = center.squeeze().to(vector.device).float()
         local_bias_subspace = bias_subspace.to(vector.device).float()
 
-        centered = vector - local_bias_mean
+        centered = vector - local_center
         coords = local_bias_subspace @ centered
 
         bias_total += torch.norm(coords)
@@ -217,18 +230,18 @@ def create_embedding(input):
     input_embeds = model.get_input_embeddings()(tokens["input_ids"])
     return input_embeds, tokens["attention_mask"]
 
-def get_optimized_epsilon(current_emb, direction, attention_mask, bias_mean_device, 
+def get_optimized_epsilon(current_emb, direction, attention_mask, center_device,
                           bias_subspace_device, r_init=0.05, growth=1.5, r_max=4.0, tol=1e-3):
-    
+
     @torch.no_grad()
-    def phi(r, current_emb, direction, attention_mask, bias_mean_device, bias_subspace_device):
+    def phi(r, current_emb, direction, attention_mask, center_device, bias_subspace_device):
         e_r = current_emb + r * direction
-        out = create_output_from_emb(e_r, attention_mask, False)
-        coords = bias_subspace_device @ (out - bias_mean_device)
+        out = create_output_from_emb(e_r, attention_mask, with_grad=False)
+        coords = bias_subspace_device @ (out - center_device)
         return torch.norm(coords).item()
-    
+
     f = lambda r: phi(r, current_emb, direction, attention_mask,
-                      bias_mean_device, bias_subspace_device)
+                      center_device, bias_subspace_device)
     
     rs   = [0.0]
     vals = [f(0.0)]
@@ -237,6 +250,8 @@ def get_optimized_epsilon(current_emb, direction, attention_mask, bias_mean_devi
         vals.append(f(r))
         rs.append(r)
         if vals[-1] < vals[-2]:
+            if len(rs) < 3:
+                return 0.0
             a, b = rs[-3], rs[-1]
             break
         r *= growth
@@ -257,3 +272,26 @@ def get_optimized_epsilon(current_emb, direction, attention_mask, bias_mean_devi
             d = a + gr * (b - a)
             fd = f(d)
     return (a + b) / 2
+
+def cg_solve(matvec, b, max_iter, tol=1e-4, x0=None):
+    """Solve A x = b for SPD operator A given as a matvec callable.
+    Returns (x, iters_used, final_residual)."""
+    x = torch.zeros_like(b) if x0 is None else x0.clone()
+    r = b - matvec(x)
+    p = r.clone()
+    rs_old = (r * r).sum()
+    b_norm = b.norm() + 1e-30
+    iters = 0
+    for k in range(max_iter):
+        Ap = matvec(p)
+        alpha = rs_old / ((p * Ap).sum() + 1e-30)
+        x = x + alpha * p
+        r = r - alpha * Ap
+        rs_new = (r * r).sum()
+        iters = k + 1
+        rel = (rs_new.sqrt() / b_norm).item()
+        if rel < tol:
+            break
+        p = r + (rs_new / rs_old) * p
+        rs_old = rs_new
+    return x, iters, rel
