@@ -3,8 +3,10 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 
 DIFF_PATH = "cpd_diff_matrix.pt"
 
-def main():
-    diff = torch.load(DIFF_PATH).float().cpu()
+def main(diff_path=DIFF_PATH, max_samples=None):  # EDITED: parameterized path + optional subsampling, and returns the value to the pipeline
+    diff = torch.load(diff_path).float().cpu()  # EDITED: parameterized path (was the hardcoded DIFF_PATH)
+    if max_samples is not None and diff.shape[0] > max_samples:  # ADDED: the full m x m distance matrix needs ~40 GB at m=100,000
+        diff = diff[torch.randperm(diff.shape[0])[:max_samples]]  # ADDED: random subsample keeps the MST computable
     m = diff.shape[0]
     E = diff / (diff.norm(p=2, dim=1, keepdim=True) + 1e-12) 
     D = torch.cdist(E, E)
@@ -20,8 +22,9 @@ def main():
     W.fill_diagonal_(0.0)
     W_np = W.detach().cpu().numpy()
     
-    mst = minimum_spanning_tree(W_np)  
-    D_mst = mst.sum() / (m - 1) 
+    mst = minimum_spanning_tree(W_np)
+    D_mst = mst.sum() / (m - 1)
     return D_mst
- 
-print(main())
+
+if __name__ == "__main__":  # ADDED: guard so importing this module no longer runs it
+    print(main())  # EDITED: was a bare module-level call

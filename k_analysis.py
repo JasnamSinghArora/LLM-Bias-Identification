@@ -2,13 +2,16 @@ import os
 import csv
 import math
 import numpy as np
+import matplotlib  # ADDED: needed to select a non-interactive backend before pyplot loads
+matplotlib.use("Agg")  # ADDED: headless backend so the pipeline never blocks on GUI windows
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from scipy.interpolate import make_interp_spline
+from constants import constants  # ADDED: needed for the per-run directory
 
 BUCKET_SIZE = 3
 
-OUT_DIR = "out_k"
+OUT_DIR = os.path.join(constants["RUN_DIR"], "out_k")  # EDITED: per-run directory (was the hardcoded "out_k")
 KS = range(1, 21)
 
 
@@ -55,8 +58,8 @@ def plot_mean_bias_score():
     plt.xticks(list(ks))
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("k_mean_bias_score.png", dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(constants["RUN_DIR"], "k_mean_bias_score.png"), dpi=150)  # EDITED: per-run path
+    plt.close()  # EDITED: was plt.show() — the pipeline must not block on a window
 
 
 def plot_marginal_gain():
@@ -77,8 +80,8 @@ def plot_marginal_gain():
     plt.xticks(list(ks))
     plt.grid(True, axis="y", alpha=0.3)
     plt.tight_layout()
-    plt.savefig("k_marginal_gain.png", dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(constants["RUN_DIR"], "k_marginal_gain.png"), dpi=150)  # EDITED: per-run path
+    plt.close()  # EDITED: was plt.show() — the pipeline must not block on a window
 
 
 def plot_bell_curves():
@@ -114,8 +117,8 @@ def plot_bell_curves():
     plt.legend(ncol=2, fontsize=8)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("k_bell_curves.png", dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(constants["RUN_DIR"], "k_bell_curves.png"), dpi=150)  # EDITED: per-run path
+    plt.close()  # EDITED: was plt.show() — the pipeline must not block on a window
 
 
 def bucket_scores(scores, size):
@@ -175,8 +178,16 @@ def plot_individual_bell_curves():
     fig.legend(handles, labels, loc="upper center", ncol=3, fontsize=9)
     fig.suptitle("Benchmark score bell curve per k", y=1.0, fontsize=13)
     plt.tight_layout(rect=[0, 0, 1, 0.97])
-    plt.savefig("k_bell_curves_individual.png", dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(constants["RUN_DIR"], "k_bell_curves_individual.png"), dpi=150)  # EDITED: per-run path
+    plt.close()  # EDITED: was plt.show() — the pipeline must not block on a window
 
 
-plot_individual_bell_curves()
+def run_all():  # ADDED: single entry point for the pipeline's step-12 graphs
+    plot_mean_bias_score()  # ADDED
+    plot_marginal_gain()  # ADDED
+    plot_bell_curves()  # ADDED
+    plot_individual_bell_curves()  # EDITED: was a bare module-level call (and the only plot being produced)
+
+
+if __name__ == "__main__":  # ADDED: guard so importing this module no longer runs it
+    run_all()  # ADDED

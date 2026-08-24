@@ -1,4 +1,5 @@
-from anthropic import Anthropic
+from openai import OpenAI  # EDITED: was `from anthropic import Anthropic` — the generation LLM is now GPT-5.6 Sol via the OpenAI API
+import os  # ADDED: needed to detect whether MODEL_PATH is a local directory or a hub repo id
 import json
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
@@ -6,10 +7,10 @@ from contextlib import nullcontext
 from json_repair import repair_json
 from constants import constants
 
-client = Anthropic(api_key=constants["API_KEY"])
+client = OpenAI(api_key=constants["API_KEY"])  # EDITED: OpenAI client replaces the Anthropic client (generation LLM = GPT-5.6 Sol)
 tokenizer = AutoTokenizer.from_pretrained(
     constants["MODEL_PATH"],
-    local_files_only=True,
+    local_files_only=os.path.isdir(constants["MODEL_PATH"]),  # EDITED: was True — the new test LLMs are hub repo ids, so allow downloads when the path is not a local directory
     trust_remote_code=True
 )
 
@@ -51,7 +52,8 @@ def generate_with_test_llm(input):
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True
+        add_generation_prompt=True,
+        enable_thinking=False  # ADDED: stops Qwen3 from emitting <think> blocks; other models' chat templates ignore this variable
     )
     text += "Answer: "   # forces the first generated token into English/answer mode
 
@@ -81,19 +83,27 @@ def create_inputs(prompt, temp, tokens, kind):
 
     for i in range (constants[f"BATCHES_{kind}"]):
         print("starting API call")
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens = constants[f"BATCH_SIZE_{kind}"] * tokens,
-            temperature=temp,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        )
+        try:  # ADDED: some GPT-5.x models reject a custom temperature — retried without it below
+            response = client.chat.completions.create(  # EDITED: OpenAI chat completions call to GPT-5.6 Sol (was Anthropic messages.create with claude-haiku)
+                model=constants["GEN_MODEL"],  # EDITED: generation model now comes from constants (gpt-5.6-sol)
+                max_completion_tokens = constants[f"BATCH_SIZE_{kind}"] * tokens,  # EDITED: OpenAI parameter name (was max_tokens)
+                temperature=temp,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ]
+            )
+        except Exception as api_err:  # ADDED
+            print(f"retrying without temperature: {api_err}")  # ADDED
+            response = client.chat.completions.create(  # ADDED
+                model=constants["GEN_MODEL"],  # ADDED
+                max_completion_tokens = constants[f"BATCH_SIZE_{kind}"] * tokens,  # ADDED
+                messages=[{"role": "user", "content": prompt}]  # ADDED
+            )  # ADDED
 
-        raw_text = response.content[0].text.strip()
+        raw_text = (response.choices[0].message.content or "").strip()  # EDITED: OpenAI response shape (was response.content[0].text)
 
         if raw_text.startswith("```"):
             raw_text = raw_text.replace("```json", "").replace("```", "").strip()
@@ -139,7 +149,7 @@ def create_outputs_from_text(inputs):
         
     return outputs
 
-def create_output_from_emb(emb, attention_mask, with_grad, max_tokens=40):
+def create_output_from_emb(emb, attention_mask, with_grad, max_tokens=40, return_text=False):  # EDITED: added return_text so the pipeline can save the generated text of optimized prompts (step 26)
     context = nullcontext() if with_grad else torch.no_grad()
 
     with context:
@@ -171,6 +181,9 @@ def create_output_from_emb(emb, attention_mask, with_grad, max_tokens=40):
         )
 
         output_vec = outputs.hidden_states[constants["LAYER"]][:, -K:, :].mean(dim=1).squeeze()
+    if return_text:  # ADDED: also hand back the decoded generation when requested
+        gen_text = tokenizer.decode(gen_ids[0], skip_special_tokens=True).strip()  # ADDED
+        return output_vec, gen_text  # ADDED
     return output_vec
 
 def get_bias_score_from_text(outputs, bias_subspace, center):
@@ -219,7 +232,8 @@ def create_embedding(input):
     text = tokenizer.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True
+        add_generation_prompt=True,
+        enable_thinking=False  # ADDED: stops Qwen3 from emitting <think> blocks; other models' chat templates ignore this variable
     )
 
     tokens = tokenizer(

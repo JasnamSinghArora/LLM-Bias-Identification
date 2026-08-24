@@ -2,12 +2,15 @@ import csv
 import math
 import os
 
+import matplotlib  # ADDED: needed to select a non-interactive backend before pyplot loads
+matplotlib.use("Agg")  # ADDED: headless backend so the pipeline never blocks on GUI windows
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.interpolate import make_interp_spline
+from constants import constants  # ADDED: needed for the per-run directory
 
-CSV_PATH = "benchmark_scores.csv"
-STATS_CSV_PATH = "benchmark_stats.csv"
+CSV_PATH = os.path.join(constants["RUN_DIR"], "benchmark_scores.csv")  # EDITED: per-run path (was hardcoded)
+STATS_CSV_PATH = os.path.join(constants["RUN_DIR"], "benchmark_stats.csv")  # EDITED: per-run path (was hardcoded)
 BUCKET_SIZE = 7
 
 
@@ -59,11 +62,12 @@ def main():
                s=60, zorder=3, label="Frequency")
     ax.plot(x_curve, y_curve, color="crimson", linewidth=2, label="Normal fit")
 
-    spline = make_interp_spline(centers, counts, k=3)
-    x_smooth = np.linspace(min(centers), max(centers), 400)
-    y_smooth = spline(x_smooth)
-    ax.plot(x_smooth, y_smooth, color="seagreen", linewidth=2,
-            linestyle="--", label="Connecting curve")
+    if len(centers) > 3:  # ADDED: the cubic spline needs at least 4 points; skip the connecting curve otherwise
+        spline = make_interp_spline(centers, counts, k=3)
+        x_smooth = np.linspace(min(centers), max(centers), 400)
+        y_smooth = spline(x_smooth)
+        ax.plot(x_smooth, y_smooth, color="seagreen", linewidth=2,
+                linestyle="--", label="Connecting curve")
 
     ax.set_xticks(centers)
     ax.set_xticklabels(labels, rotation=45, ha="right")
@@ -74,8 +78,8 @@ def main():
     ax.grid(axis="y", linestyle="--", alpha=0.5)
 
     plt.tight_layout()
-    plt.savefig("bell_curve.png", dpi=150)
-    plt.show()
+    plt.savefig(os.path.join(constants["RUN_DIR"], "bell_curve.png"), dpi=150)  # EDITED: per-run path
+    plt.close()  # EDITED: was plt.show() — the pipeline must not block on a window
 
 
 if __name__ == "__main__":
