@@ -1,25 +1,25 @@
 import torch
 import time
-import os  # ADDED: needed for the per-run cache path
-import csv  # ADDED: needed for trajectory logging and for reading the benchmark prompts
+import os
+import csv
 from constants import constants
-from helper import create_output_from_emb, get_bias_score_from_emb, create_embedding, get_optimized_epsilon, create_inputs_with_grad  # EDITED: dropped create_inputs and the prompt import — the Z prompts now come from the benchmark (step 21), not from a fresh API call
+from helper import create_output_from_emb, get_bias_score_from_emb, create_embedding, get_optimized_epsilon, create_inputs_with_grad
 from bias_subspace import load_bias_subspace
 
-bias_subspace = None  # EDITED: was loaded at import time — now set by init_optimizer_state() once the caches exist
-output_center = None  # EDITED: was loaded at import time — now set by init_optimizer_state()
-BASELINE_BIAS_SCORE = None  # EDITED: was loaded at import time — now set by init_optimizer_state()
+bias_subspace = None
+output_center = None
+BASELINE_BIAS_SCORE = None
 
-def init_optimizer_state():  # ADDED: loads the frozen subspace (step 15) and benchmark reference (step 20); called by final_pipeline.py after the benchmark phase
-    global bias_subspace, output_center, BASELINE_BIAS_SCORE  # ADDED
-    bias_subspace, _ = load_bias_subspace()  # EDITED: moved here from module level
-    _c = torch.load(os.path.join(constants["RUN_DIR"], "output_center_cache.pt"))  # EDITED: moved here from module level, per-run path
-    output_center = _c["output_center"]  # EDITED: moved here from module level
-    BASELINE_BIAS_SCORE = _c["baseline"]  # EDITED: moved here from module level
+def init_optimizer_state():
+    global bias_subspace, output_center, BASELINE_BIAS_SCORE
+    bias_subspace, _ = load_bias_subspace()
+    _c = torch.load(os.path.join(constants["RUN_DIR"], "output_center_cache.pt"))
+    output_center = _c["output_center"]
+    BASELINE_BIAS_SCORE = _c["baseline"]
 
-def create_optimized_inputs(prompts):  # EDITED: takes the exact benchmark Z prompts (step 21) instead of generating a fresh set via the API
+def create_optimized_inputs(prompts):
     global bias_subspace
-    inputs = prompts  # EDITED: was create_inputs(prompt_for_initial_questions, ...) — the starting prompts are the frozen benchmark prompts
+    inputs = prompts
     print("Inital Input Created")
     opt_input_embeddings = []
     attention_masks = []
@@ -31,7 +31,7 @@ def create_optimized_inputs(prompts):  # EDITED: takes the exact benchmark Z pro
 
     return opt_input_embeddings, attention_masks
 
-def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_step=0.1, traj_path=None, prompt_idx=None, max_steps=100):  # EDITED: added optional trajectory logging (convergence figures) and a max_steps safety cap
+def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_step=0.1, traj_path=None, prompt_idx=None, max_steps=100):
     current_emb = current_emb.detach().clone().float().requires_grad_(True)
     device = current_emb.device
     centre_device = output_center.squeeze().to(device)
@@ -104,26 +104,26 @@ def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_st
 
         print("Embedding Changed by", step_delta_norm)
 
-        if traj_path is not None:  # ADDED: log this optimization step for the paper's convergence figures
-            with open(traj_path, "a", newline="") as f:  # ADDED
-                csv.writer(f).writerow([prompt_idx, step_count, float(bias_score.item()), float(step_delta_norm)])  # ADDED
+        if traj_path is not None:
+            with open(traj_path, "a", newline="") as f:
+                csv.writer(f).writerow([prompt_idx, step_count, float(bias_score.item()), float(step_delta_norm)])
 
         if torch.isnan(new_emb).any():
             return current_emb.detach()
         elif step_delta_norm < min_update_per_step:
             return new_emb.detach()
-        elif step_count >= max_steps:  # ADDED: safety cap so one prompt cannot loop forever
-            return new_emb.detach()  # ADDED
+        elif step_count >= max_steps:
+            return new_emb.detach()
         else:
             current_emb = new_emb.detach().requires_grad_(True)
 
 def main():
-    init_optimizer_state()  # ADDED: caches are loaded here now (was module level)
-    prompts = []  # ADDED: the Z prompts are read back from the frozen benchmark output (step 21)
-    with open(os.path.join(constants["RUN_DIR"], "benchmark_scores.csv"), newline="") as f:  # ADDED
-        for row in csv.DictReader(f):  # ADDED
-            prompts.append(row["prompt"])  # ADDED
-    inputs, attention_masks = create_optimized_inputs(prompts)  # EDITED: passes the benchmark prompts through
+    init_optimizer_state()
+    prompts = []
+    with open(os.path.join(constants["RUN_DIR"], "benchmark_scores.csv"), newline="") as f:
+        for row in csv.DictReader(f):
+            prompts.append(row["prompt"])
+    inputs, attention_masks = create_optimized_inputs(prompts)
     outputs = []
     output_vecs = []
     for input, attention_mask in zip(inputs, attention_masks):
@@ -138,5 +138,5 @@ def main():
     print("OPTIMIZED")
     print(opt_bias_score)
 
-if __name__ == "__main__":  # ADDED: guard so final_pipeline.py can import the optimizer without triggering a full run
-    main()  # EDITED: was a bare module-level call
+if __name__ == "__main__":
+    main()
