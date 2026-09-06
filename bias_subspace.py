@@ -1,10 +1,13 @@
 import torch
 import os
 import csv
+import time
 from prompts import prompt_for_pairs
 from helper import hidden_states, create_inputs
 from constants import constants
+from runlog import log, atomic_save, Progress, fmt_duration
 
+SAVE_EVERY = 500  # pairs between checkpoints while embedding
 CACHE_PATH = os.path.join(constants["RUN_DIR"], "bias_subspace_cache.pt")
 CPD_CSV_PATH = os.path.join(constants["RUN_DIR"], "cpd_dataset.csv")
 DIFF_MATRIX_PATH = os.path.join(constants["RUN_DIR"], "cpd_diff_matrix.pt")
@@ -18,7 +21,7 @@ def create_bias_sentence_pairs():
         with open(CPD_CSV_PATH, newline="") as f:
             for row in csv.DictReader(f):
                 pairs.append((row["sentence_A"], row["sentence_B"]))
-        print(f"loaded {len(pairs)} existing pairs from {CPD_CSV_PATH}")
+        log(f"loaded {len(pairs)} counterfactual pairs from {CPD_CSV_PATH}")
         return pairs
 
     pairs = []
@@ -42,11 +45,12 @@ def get_CPD():
     diff_vectors = []
     if os.path.exists(DIFF_PROGRESS_PATH):
         diff_vectors = torch.load(DIFF_PROGRESS_PATH)
-        print(f"resuming CPD embedding from pair {len(diff_vectors)}")
-    start = len(diff_vectors)
-    for i, (sentence1, sentence2) in enumerate(pairs):
-        if i < start:
-            continue
+    if len(diff_vectors) > len(pairs):
+        log("saved progress holds more vectors than there are pairs; starting the embedding over")
+        diff_vectors = []
+    prog = Progress("CPD embeddings", len(pairs), done=len(diff_vectors), every=SAVE_EVERY)
+    for i in range(len(diff_vectors), len(pairs)):
+        sentence1, sentence2 = pairs[i]
 
         hidden_states1 = hidden_states(sentence1)
         hidden_states2 = hidden_states(sentence2)
@@ -62,16 +66,17 @@ def get_CPD():
 
         d = vector1 - vector2
         diff_vectors.append(d.float().cpu())
-        if (i + 1) % 1000 == 0:
-            torch.save(diff_vectors, DIFF_PROGRESS_PATH)
-            print(f"CPD embeddings: {i + 1}/{len(pairs)}")
+        prog.step()
+        if len(diff_vectors) % SAVE_EVERY == 0:
+            atomic_save(diff_vectors, DIFF_PROGRESS_PATH)
             if torch.backends.mps.is_available():
                 torch.mps.empty_cache()
 
     diff_matrix = torch.stack(diff_vectors)
-    torch.save(diff_matrix, DIFF_MATRIX_PATH)
+    atomic_save(diff_matrix, DIFF_MATRIX_PATH)
     if os.path.exists(DIFF_PROGRESS_PATH):
         os.remove(DIFF_PROGRESS_PATH)
+    log(f"saved difference matrix {tuple(diff_matrix.shape)} -> {DIFF_MATRIX_PATH}")
     return diff_matrix
 
 def load_CPD():
@@ -82,17 +87,19 @@ def create_bias_subspace_helper(k):
     diff_matrix = load_CPD().float().cpu()
     bias_mean = diff_matrix.mean(dim=0, keepdim=True)
     diff_matrix_centered = diff_matrix - bias_mean
+    log(f"SVD of the centered difference matrix {tuple(diff_matrix.shape)} to choose the final k")
+    t0 = time.time()
     U, S, Vh = torch.linalg.svd(diff_matrix_centered, full_matrices=False)
-    torch.save(S, SINGULAR_VALUES_PATH)
+    atomic_save(S, SINGULAR_VALUES_PATH)
 
     if k is None:
         log_S = torch.log(S + 1e-8)
         log_drops = log_S[:-1] - log_S[1:]
         k = torch.argmax(log_drops[2:20]).item() + 3
-        
-    print(k)
-    
-    bias_subspace = Vh[:k]
+
+    log(f"SVD finished in {fmt_duration(time.time() - t0)}; final k = {k} (largest log drop between consecutive singular values 3..20)")
+
+    bias_subspace = Vh[:k].clone()  # clone: saving a view would write the whole 4096x4096 matrix
     return bias_subspace, bias_mean
 
 def load_bias_subspace():
@@ -102,7 +109,7 @@ def load_bias_subspace():
     
 def create_bias_subspace(k=None, CACHE_PATH=CACHE_PATH):
     bias_subspace, bias_mean = create_bias_subspace_helper(k)
-    torch.save({"bias_subspace": bias_subspace, "bias_mean": bias_mean}, CACHE_PATH)
+    atomic_save({"bias_subspace": bias_subspace, "bias_mean": bias_mean}, CACHE_PATH)
     return bias_subspace, bias_mean
 
 if __name__ == "__main__":

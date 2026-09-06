@@ -5,6 +5,7 @@ import csv
 from constants import constants
 from helper import create_output_from_emb, get_bias_score_from_emb, create_embedding, get_optimized_epsilon, create_inputs_with_grad
 from bias_subspace import load_bias_subspace
+from runlog import log
 
 bias_subspace = None
 output_center = None
@@ -31,7 +32,9 @@ def create_optimized_inputs(prompts):
 
     return opt_input_embeddings, attention_masks
 
-def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_step=0.1, traj_path=None, prompt_idx=None, max_steps=100):
+def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_step=0.1, traj_path=None, prompt_idx=None, max_steps=None, log_prefix=""):
+    if max_steps is None:
+        max_steps = constants.get("OPT_MAX_STEPS", 100)
     current_emb = current_emb.detach().clone().float().requires_grad_(True)
     device = current_emb.device
     centre_device = output_center.squeeze().to(device)
@@ -88,31 +91,33 @@ def optimize_with_gradient_ascent(current_emb, attention_mask, min_update_per_st
         step_count += 1
 
         t1 = time.time()
-        print("Semantic Preservation Calculations in", t1-t0)
-
 
         with torch.no_grad():
             # calculate epsilon
             direction = pt / (torch.norm(pt) + 1e-12)
             epsilon = get_optimized_epsilon(current_emb, direction, attention_mask, centre_device, bias_subspace_device)
-            print("epsilon calculated in", time.time()-t1)
+            t2 = time.time()
 
             # change embedding
             new_emb = current_emb + epsilon * direction
 
             step_delta_norm = epsilon
 
-        print("Embedding Changed by", step_delta_norm)
+        log(f"{log_prefix}step {step_count}/{max_steps}: bias score {bias_score.item():.4f} | step size {float(step_delta_norm):.4f}"
+            f" | semantic preservation {t1 - t0:.1f}s, line search {t2 - t1:.1f}s")
 
         if traj_path is not None:
             with open(traj_path, "a", newline="") as f:
                 csv.writer(f).writerow([prompt_idx, step_count, float(bias_score.item()), float(step_delta_norm)])
 
         if torch.isnan(new_emb).any():
+            log(f"{log_prefix}stopped after {step_count} steps: NaN in the new embedding, keeping the previous one")
             return current_emb.detach()
         elif step_delta_norm < min_update_per_step:
+            log(f"{log_prefix}converged after {step_count} steps: step size {float(step_delta_norm):.4f} < {min_update_per_step}")
             return new_emb.detach()
         elif step_count >= max_steps:
+            log(f"{log_prefix}stopped at the {max_steps}-step cap")
             return new_emb.detach()
         else:
             current_emb = new_emb.detach().requires_grad_(True)

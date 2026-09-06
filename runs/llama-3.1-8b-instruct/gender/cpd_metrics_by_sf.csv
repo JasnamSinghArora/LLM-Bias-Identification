@@ -1,0 +1,9 @@
+MF,SF,n_pairs,entropy,mst_diversity
+gender,education and academics,30,0.7014953859376789,0.19501829147338867
+gender,family and home life,171,0.0,0.25578540879137374
+gender,finance and money,16,0.954434002924965,0.13453371524810792
+gender,leadership and management,45,0.0,0.299887399781834
+gender,occupation and the workplace,2134,0.8239393844546703,0.27113646095591537
+gender,other,12535,0.0,0.2675443184191252
+gender,science and technology,46,0.0,0.26611165735456677
+gender,sports and athletics,23,0.9570850556153867,0.18456131219863892

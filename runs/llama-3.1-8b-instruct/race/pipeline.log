@@ -1,0 +1,27 @@
+[20:17:52] run start | model=meta-llama/Llama-3.1-8B-Instruct | category=race | layer=16
+[20:17:52] run folder: /Users/jasnamsingharora/Desktop/Grade 12/St Yau/cs/code/runs/llama-3.1-8b-instruct/race (full log in pipeline.log)
+[20:17:52] ===== stage 1/9: copy the pre-generated datasets into the run folder =====
+[20:17:52] copied ['cpd_dataset.csv', 'kexp_prompts.pt', 'benchmark_prompts.pt']
+[20:17:52] datasets: 15000 counterfactual pairs, 500 k-experiment prompts, 1000 benchmark prompts
+[20:17:52] stage 1/9 finished in 0s
+[20:17:52] ===== stage 2/9: load the test LLM meta-llama/Llama-3.1-8B-Instruct =====
+[20:18:02] model loaded on mps:0 as torch.bfloat16
+[20:18:02] stage 2/9 finished in 9s
+[20:18:02] ===== stage 3/9: embed every counterfactual pair and build the difference matrix =====
+[20:18:02] loaded 15000 counterfactual pairs from /Users/jasnamsingharora/Desktop/Grade 12/St Yau/cs/code/runs/llama-3.1-8b-instruct/race/cpd_dataset.csv
+[20:18:02] CPD embeddings: 0/15000 done, 15000 left
+[20:18:51] CPD embeddings: 500/15000 (3.3%) | 14500 left | elapsed 48s | eta 23m33s | 10.26 items/s
+[20:19:38] CPD embeddings: 1000/15000 (6.7%) | 14000 left | elapsed 1m36s | eta 22m28s | 10.38 items/s
+[20:20:26] CPD embeddings: 1500/15000 (10.0%) | 13500 left | elapsed 2m24s | eta 21m36s | 10.41 items/s
+[20:21:14] CPD embeddings: 2000/15000 (13.3%) | 13000 left | elapsed 3m12s | eta 20m48s | 10.42 items/s
+[20:22:02] CPD embeddings: 2500/15000 (16.7%) | 12500 left | elapsed 4m00s | eta 20m01s | 10.40 items/s
+[20:22:51] CPD embeddings: 3000/15000 (20.0%) | 12000 left | elapsed 4m48s | eta 19m14s | 10.39 items/s
+[20:23:39] CPD embeddings: 3500/15000 (23.3%) | 11500 left | elapsed 5m37s | eta 18m29s | 10.37 items/s
+[20:24:29] CPD embeddings: 4000/15000 (26.7%) | 11000 left | elapsed 6m26s | eta 17m43s | 10.34 items/s
+[20:25:18] CPD embeddings: 4500/15000 (30.0%) | 10500 left | elapsed 7m16s | eta 16m57s | 10.32 items/s
+[20:26:07] CPD embeddings: 5000/15000 (33.3%) | 10000 left | elapsed 8m05s | eta 16m11s | 10.30 items/s
+[20:26:57] CPD embeddings: 5500/15000 (36.7%) | 9500 left | elapsed 8m54s | eta 15m23s | 10.28 items/s
+[20:27:46] CPD embeddings: 6000/15000 (40.0%) | 9000 left | elapsed 9m44s | eta 14m36s | 10.27 items/s
+[20:28:36] CPD embeddings: 6500/15000 (43.3%) | 8500 left | elapsed 10m33s | eta 13m48s | 10.25 items/s
+[20:29:25] CPD embeddings: 7000/15000 (46.7%) | 8000 left | elapsed 11m23s | eta 13m01s | 10.24 items/s
+[20:29:57] interrupted by Ctrl+C during stage 3/9 (embed every counterfactual pair and build the difference matrix); every finished checkpoint is saved, run again to resume

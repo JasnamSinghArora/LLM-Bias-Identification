@@ -1,1 +1,8 @@
 .env
+__pycache__/
+.DS_Store
+*.tmp
+
+# per-run checkpoints too large for GitHub (100 MB limit); the pipeline recomputes or skips them
+runs/**/cpd_diff_matrix.pt
+runs/**/cpd_diff_progress.pt

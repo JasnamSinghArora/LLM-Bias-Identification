@@ -171,13 +171,17 @@ POLITICS_SSF = [t for ts in POLITICS_SSF_BY_SF.values() for t in ts]
 
 constants = {
     "API_KEY" : os.environ.get("OPENAI_API_KEY", os.environ.get("API_KEY", "")),
-    "GEN_MODEL" : "gpt-5.6-sol",
-    "DATASET_SIZE_CPD" : 5000,
-    "BATCHES_CPD" : 20,
+    "GEN_MODEL" : "gpt-5.6-luna",
+    # target number of UNIQUE items per dataset; generation keeps calling the API until it gets there
+    "DATASET_SIZE_CPD" : 15000,
     "DATASET_SIZE_BIAS" : 1000,
-    "BATCHES_BIAS" : 20,
     "DATASET_SIZE_KEXP" : 500,
-    "BATCHES_KEXP" : 10,
+    # how many items each API call asks for (the model usually returns more)
+    "BATCH_SIZE_CPD" : 250,
+    "BATCH_SIZE_BIAS" : 50,
+    "BATCH_SIZE_KEXP" : 50,
+    # safety cap on API calls per dataset so a run can never loop forever
+    "MAX_API_CALLS" : 60,
     "TEMP" : 1.0,
     "TOKENS" : 60,
     "MF" : os.environ.get("PIPELINE_MF", "gender"),
@@ -194,6 +198,7 @@ constants = {
     ],
     "DIVERSITY_MAX_SAMPLES" : 5000,
     "OPT_MAX_PROMPTS" : None,
+    "OPT_MAX_STEPS" : 20,   # gradient-ascent steps per prompt before giving up
 }
 constants["BIAS_CATEGORIES"] = [
     {"MF": "gender", "SFS": GENDER_SFS, "SSF": GENDER_SSF, "SSF_BY_SF": GENDER_SSF_BY_SF},
@@ -207,7 +212,8 @@ if os.environ.get("PIPELINE_SSF"):
 if os.environ.get("PIPELINE_SSF_BY_SF"):
     constants["SSF_BY_SF"] = json.loads(os.environ["PIPELINE_SSF_BY_SF"])
 if os.environ.get("PIPELINE_SMOKE") == "1":
-    constants.update({"DATASET_SIZE_CPD": 30, "BATCHES_CPD": 1, "DATASET_SIZE_BIAS": 7, "BATCHES_BIAS": 1, "DATASET_SIZE_KEXP": 7, "BATCHES_KEXP": 1, "OPT_MAX_PROMPTS": 2})
-constants["BATCH_SIZE_CPD"] = constants["DATASET_SIZE_CPD"] //  constants["BATCHES_CPD"]
-constants["BATCH_SIZE_BIAS"] = constants["DATASET_SIZE_BIAS"] //  constants["BATCHES_BIAS"]
-constants["BATCH_SIZE_KEXP"] = constants["DATASET_SIZE_KEXP"] //  constants["BATCHES_KEXP"]
+    constants.update({"DATASET_SIZE_CPD": 30, "BATCH_SIZE_CPD": 30, "DATASET_SIZE_BIAS": 7, "BATCH_SIZE_BIAS": 7, "DATASET_SIZE_KEXP": 7, "BATCH_SIZE_KEXP": 7, "OPT_MAX_PROMPTS": 2, "OPT_MAX_STEPS": 3})
+# nominal number of API calls per dataset, kept for the older experiment scripts
+constants["BATCHES_CPD"] = max(1, constants["DATASET_SIZE_CPD"] // constants["BATCH_SIZE_CPD"])
+constants["BATCHES_BIAS"] = max(1, constants["DATASET_SIZE_BIAS"] // constants["BATCH_SIZE_BIAS"])
+constants["BATCHES_KEXP"] = max(1, constants["DATASET_SIZE_KEXP"] // constants["BATCH_SIZE_KEXP"])
