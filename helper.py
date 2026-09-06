@@ -185,6 +185,50 @@ def create_output_from_emb(emb, attention_mask, with_grad, max_tokens=40, return
         return output_vec, gen_text
     return output_vec
 
+def create_outputs_from_emb_batch(embs, attention_mask, max_tokens=40):
+    """Batched, no-grad version of create_output_from_emb for B perturbed copies of one prompt.
+
+    embs: (B, T, H) with the same token length in every row; attention_mask: (1, T) or (B, T).
+    Returns (B, H): for each row, the mean layer-LAYER hidden state over that row's generated
+    tokens up to and including its first end-of-sequence token, i.e. the same quantity
+    create_output_from_emb returns for that row on its own.
+    """
+    with torch.no_grad():
+        B = embs.shape[0]
+        embs = embs.to(model.device).to(model.dtype)
+        mask = attention_mask.to(model.device)
+        if mask.shape[0] == 1:
+            mask = mask.repeat(B, 1)
+        gen_ids = model.generate(
+            inputs_embeds=embs,
+            attention_mask=mask,
+            max_new_tokens=max_tokens,
+            do_sample=False,
+            pad_token_id=tokenizer.eos_token_id,
+        )
+        K = gen_ids.shape[1]
+
+        # rows that stop early are padded after their end token; count only up to that token
+        eos_ids = model.generation_config.eos_token_id
+        eos_ids = [eos_ids] if isinstance(eos_ids, int) else list(eos_ids or [])
+        eos_ids = torch.tensor(sorted(set(eos_ids + [tokenizer.eos_token_id])), device=gen_ids.device)
+        is_eos = torch.isin(gen_ids, eos_ids)
+        first_eos = torch.where(is_eos.any(dim=1), is_eos.int().argmax(dim=1), torch.full((B,), K - 1, device=gen_ids.device))
+        gen_mask = torch.arange(K, device=gen_ids.device)[None, :] <= first_eos[:, None]
+
+        gen_embeds = model.get_input_embeddings()(gen_ids).to(model.dtype)
+        full_embeds = torch.cat([embs, gen_embeds], dim=1)
+        full_mask = torch.cat([mask, gen_mask.to(mask.dtype)], dim=1)
+        outputs = model(
+            inputs_embeds=full_embeds,
+            attention_mask=full_mask,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        h = outputs.hidden_states[constants["LAYER"]][:, -K:, :].float()
+        w = gen_mask.float().unsqueeze(-1)
+        return (h * w).sum(dim=1) / w.sum(dim=1)
+
 def get_bias_score_from_text(outputs, bias_subspace, center):
     bias_total = 0
     err_cnt = 0
@@ -244,47 +288,47 @@ def create_embedding(input):
     return input_embeds, tokens["attention_mask"]
 
 def get_optimized_epsilon(current_emb, direction, attention_mask, center_device,
-                          bias_subspace_device, r_init=0.05, growth=1.5, r_max=4.0, tol=1e-3):
+                          bias_subspace_device, r_init=0.05, growth=1.5, r_max=4.0, tol=1e-3, grid=16):
+    """Step size that maximises the bias score along `direction`.
+
+    Bracketing is the same rule as before: try r_init, r_init*growth, ... up to r_max and stop at
+    the first drop in score. Every candidate is now scored in one batched generation instead of
+    one at a time, and the bracket is narrowed with batched grids of `grid` points until the
+    spacing is below `tol`, instead of a sequential golden-section search.
+    """
 
     @torch.no_grad()
-    def phi(r, current_emb, direction, attention_mask, center_device, bias_subspace_device):
-        e_r = current_emb + r * direction
-        out = create_output_from_emb(e_r, attention_mask, with_grad=False)
-        coords = bias_subspace_device @ (out - center_device)
-        return torch.norm(coords).item()
+    def phi_batch(rs):
+        embs = torch.cat([current_emb + r * direction for r in rs], dim=0)  # (B, T, H)
+        outs = create_outputs_from_emb_batch(embs, attention_mask)          # (B, H)
+        coords = (outs - center_device) @ bias_subspace_device.T            # (B, k)
+        return coords.norm(dim=1).tolist()
 
-    f = lambda r: phi(r, current_emb, direction, attention_mask,
-                      center_device, bias_subspace_device)
-    
-    rs   = [0.0]
-    vals = [f(0.0)]
+    # 1) bracketing: score 0, r_init, r_init*growth, ... <= r_max in a single batch
+    rs = [0.0]
     r = r_init
     while r <= r_max:
-        vals.append(f(r))
         rs.append(r)
-        if vals[-1] < vals[-2]:
-            if len(rs) < 3:
-                return 0.0
-            a, b = rs[-3], rs[-1]
-            break
         r *= growth
-    else:
-        return rs[-1] 
-    
-    gr = (5 ** 0.5 - 1) / 2   # ~0.618
-    c = b - gr * (b - a)
-    d = a + gr * (b - a)
-    fc, fd = f(c), f(d)
-    while abs(b - a) > tol:
-        if fc > fd:
-            b, d, fd = d, c, fc
-            c = b - gr * (b - a)
-            fc = f(c)
-        else:
-            a, c, fc = c, d, fd
-            d = a + gr * (b - a)
-            fd = f(d)
-    return (a + b) / 2
+    vals = phi_batch(rs)
+    first_drop = next((i for i in range(1, len(rs)) if vals[i] < vals[i - 1]), None)
+    if first_drop is None:
+        return rs[-1]
+    if first_drop < 2:
+        return 0.0
+    a, b = rs[first_drop - 2], rs[first_drop]
+    best_r, best_v = rs[first_drop - 1], vals[first_drop - 1]
+
+    # 2) refine: evenly spaced interior grid, keep the best point, shrink the bracket around it
+    while (b - a) / grid > tol:
+        cand = torch.linspace(a, b, grid + 2)[1:-1].tolist()
+        cv = phi_batch(cand)
+        i = max(range(len(cand)), key=lambda j: cv[j])
+        if cv[i] > best_v:
+            best_r, best_v = cand[i], cv[i]
+        step = (b - a) / (grid + 1)
+        a, b = max(a, best_r - step), min(b, best_r + step)
+    return best_r
 
 def cg_solve(matvec, b, max_iter, tol=1e-4, x0=None):
     """Solve A x = b for SPD operator A given as a matvec callable.
