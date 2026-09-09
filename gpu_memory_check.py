@@ -32,7 +32,7 @@ log(f"model {constants['MODEL_PATH']} loaded on {dev}; {mem()}")
 prompts = torch.load(os.path.join(here, "datasets", constants["MF"], "benchmark_prompts.pt"))
 prompt = max(prompts, key=len)  # longest prompt = worst case for memory
 emb, mask = create_embedding(prompt)
-hidden = helper.model.config.hidden_size
+hidden = helper.model.get_input_embeddings().weight.shape[1]  # works for plain and multimodal-wrapper models alike
 log(f"longest benchmark prompt has {emb.shape[1]} tokens; hidden size {hidden}")
 
 # a random orthonormal k=3 subspace stands in for the real one; memory use is identical
