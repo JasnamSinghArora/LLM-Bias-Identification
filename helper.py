@@ -8,18 +8,37 @@ from json_repair import repair_json
 from constants import constants
 
 client = OpenAI(api_key=constants["API_KEY"])
+tokenizer_kwargs = {}
+if "mistral" in constants["MODEL_PATH"].lower():
+    tokenizer_kwargs["fix_mistral_regex"] = True  # Mistral tokenizers ship a pre-tokenizer regex bug; transformers warns to set this
 tokenizer = AutoTokenizer.from_pretrained(
     constants["MODEL_PATH"],
     local_files_only=os.path.isdir(constants["MODEL_PATH"]),
-    trust_remote_code=True
+    trust_remote_code=True,
+    **tokenizer_kwargs
 )
 
-model = AutoModelForCausalLM.from_pretrained(
-    constants["MODEL_PATH"],
-    torch_dtype=torch.bfloat16,
-    device_map="auto",
-    attn_implementation="eager"
-)
+# some chat templates (Mistral's) silently prepend a several-hundred-token default system prompt when the
+# conversation has no system message; an empty system message suppresses it so prompts stay short
+CHAT_NEEDS_EMPTY_SYSTEM = "default_system_message" in (tokenizer.chat_template or "")
+
+try:
+    model = AutoModelForCausalLM.from_pretrained(
+        constants["MODEL_PATH"],
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager"
+    )
+except ValueError as err:
+    from transformers import AutoModelForImageTextToText
+    print(f"AutoModelForCausalLM cannot load {constants['MODEL_PATH']} ({str(err).splitlines()[0][:120]}); "
+          f"loading it with AutoModelForImageTextToText instead", flush=True)
+    model = AutoModelForImageTextToText.from_pretrained(
+        constants["MODEL_PATH"],
+        torch_dtype=torch.bfloat16,
+        device_map="auto",
+        attn_implementation="eager"
+    )
 
 model.eval()
 
@@ -271,6 +290,8 @@ def create_embedding(input):
     messages = [
         {"role": "user", "content": input}
     ]
+    if CHAT_NEEDS_EMPTY_SYSTEM:
+        messages.insert(0, {"role": "system", "content": ""})
 
     text = tokenizer.apply_chat_template(
         messages,
