@@ -1,0 +1,8 @@
+torch==2.8.0
+transformers==5.15.1
+accelerate==1.7.0
+openai==1.60.1
+json_repair==0.59.9
+numpy==2.2.6
+scipy==1.15.2
+matplotlib==3.10.0
